@@ -9,95 +9,111 @@ Tie::Hash::Method - Tied hash with specific methods overriden by callbacks
 
 =head1 VERSION
 
-Version 0.01
+Version 0.02
 
 =cut
 
-our $VERSION= '0.01';
+our $VERSION= '0.02';
 $VERSION= eval $VERSION;    # just in case we have a dev release
-our @EXPORT_OK= qw(tie_hash_method);
+our @EXPORT_OK= qw(tie_hash_method HASH METHOD PRIVATE);
 
+use constant HASH => 0;
+use constant METHOD => 1;
+use constant PRIVATE => 2;
+use Data::Dumper;
+
+# not overridable obviously.
 sub TIEHASH {
     my $class= shift;
-    bless { hash => {}, @_ }, $class;
-}
-
-sub STORE {
-    if ( $_[0]->{STORE} ) {
-        return $_[0]->{STORE}->(@_);
-    } else {
-        return $_[0]->{hash}{ $_[1] }= $_[2];
-    }
+    my %opts= @_;
+    #die Dumper 
+    bless [
+            {}, #HASH
+            +{ map { $_ => $opts{$_} } grep {$_ eq uc($_) } keys %opts }, #METHOD
+            +{ map { $_ => $opts{$_} } grep {$_ ne uc($_) } keys %opts }, #PRIVATE
+           ], $class;
 }
 
 sub FETCH {
-    if ( $_[0]->{FETCH} ) {
-        return $_[0]->{FETCH}->(@_);
+    if ( my $cb= $_[0][METHOD]->{FETCH} ) {
+        return $cb->(@_);
     } else {
-        return $_[0]->{hash}{ $_[1] };
+        return $_[0][HASH]->{ $_[1] };
     }
 }
 
-sub FIRSTKEY {
-    if ( $_[0]->{FIRSTKEY} ) {
-        return $_[0]->{FIRSTKEY}->(@_);
+sub STORE {
+    if ( my $cb= $_[0][METHOD]->{STORE} ) {
+        return $cb->(@_);
     } else {
-
-        # reset iterator
-        my $val= scalar keys %{ $_[0]{hash} };
-        return each %{ $_[0]{hash} };
-    }
-}
-
-sub NEXTKEY {
-    if ( $_[0]->{NEXTKEY} ) {
-        return $_[0]->{NEXTKEY}->(@_);
-    } else {
-        return each %{ $_[0]{hash} };
+        return $_[0][HASH]->{ $_[1] }= $_[2];
     }
 }
 
 sub EXISTS {
-    if ( $_[0]->{EXISTS} ) {
-        return $_[0]->{EXISTS}->(@_);
+    if ( my $cb= $_[0][METHOD]->{EXISTS} ) {
+        return $cb->(@_);
     } else {
-        exists $_[0]{hash}->{ $_[1] };
+        exists $_[0][HASH]->{ $_[1] };
     }
 }
 
 sub DELETE {
-    if ( $_[0]->{DELETE} ) {
-        return $_[0]->{DELETE}->(@_);
+    if ( my $cb= $_[0][METHOD]->{DELETE} ) {
+        return $cb->(@_);
     } else {
-        delete $_[0]{hash}->{ $_[1] };
+        delete $_[0][HASH]->{ $_[1] };
     }
 }
 
-sub CLEAR {
-    if ( $_[0]->{CLEAR} ) {
-        return $_[0]->{CLEAR}->(@_);
+
+sub FIRSTKEY {
+    if ( my $cb= $_[0][METHOD]->{FIRSTKEY} ) {
+        return $cb->(@_);
     } else {
-        return %{ $_[0]{hash} }= ();
+        # reset iterator
+        my $val= scalar keys %{ $_[0][HASH] };
+        return each %{ $_[0][HASH] };
+    }
+}
+
+sub NEXTKEY {
+    if ( my $cb= $_[0][METHOD]->{NEXTKEY} ) {
+        return $cb->(@_);
+    } else {
+        return each %{ $_[0][HASH] };
+    }
+}
+
+
+sub CLEAR {
+    if ( my $cb= $_[0][METHOD]->{CLEAR} ) {
+        return $cb->(@_);
+    } else {
+        return %{ $_[0][HASH] }= ();
     }
 }
 
 sub SCALAR {
-    if ( $_[0]->{NEXTKEY} ) {
-        return $_[0]->{NEXTKEY}->(@_);
+    if ( my $cb= $_[0][METHOD]->{SCALAR} ) {
+        return $cb->(@_);
     } else {
-        return scalar %{ $_[0]{hash} };
+        return scalar %{ $_[0][HASH] };
     }
 }
 
 sub methods {
-    return grep { $_ ne 'hash' } keys %{ $_[0] };
+    return grep { $_ ne 'hash' } keys %{ $_[0][METHOD] };
 }
 
-sub hash : lvalue {
-    $_[0]{hash};
-}
+sub method_hash : lvalue { $_[0][METHOD] }
 
-sub tie_hash_method {
+sub base_hash : lvalue { $_[0][HASH] }
+sub h         : lvalue { $_[0][HASH] }
+sub private_hash : lvalue { $_[0][PRIVATE] }
+sub p            : lvalue { $_[0][PRIVATE] }
+
+sub hash_overload {
     tie my %hash, __PACKAGE__, @_;
     return \%hash;
 }
@@ -108,11 +124,10 @@ __END__
 
 =head1 SYNOPSIS
 
-    tie my %hash, Tie::Hash::Method => FETCH => sub {
-        exists $_[0]{hash}{$_[1]} ? $_[0]{hash}{$_[1]} : $_[1]
-    };
-    print join "\n", tied(%hash)->methods;
-    print Dumper(tied(%hash)->hash);
+    tie my %hash, 'Tie::Hash::Method',
+        FETCH => sub {
+            exists $_[0]->base_hash->{$_[1]} ? $_[0]->base_hash->{$_[1]} : $_[1]
+        };
 
 =head1 DESCRIPTION
 
@@ -124,18 +139,28 @@ Each method in a standard tie can be overriden by providing a callback
 to the tie call. So for instance if you wanted a tied hash that changed
 'foo' into 'bar' on store you could say:
 
-    tie my %hash, Tie::Hash::Method => STORE => sub {
-        (my $v=pop)=~s/foo/bar/g if defined $_[2];
-        return $_[0]{hash}{$_[1]}=$v;
-    };
+    tie my %hash, 'Tie::Hash::Method',
+        STORE => sub {
+            (my $v=pop)=~s/foo/bar/g if defined $_[2];
+            return $_[0]->base_hash->{$_[1]}=$v;
+        };
 
 The callback is called with exactly the same arguments as the tie itself, in
-particular the tied object is always passed as the first argument. The tied object
-is itself a hash, which contains a second hash in the "hash" slot which is used
-to perform the default operations. The callbacks available are the other keys
-in the object. If your code needs to store extra data in the object it should
-be stored in the 'pvt' slot of the object. No future release of this module
+particular the tied object is always passed as the first argument. 
+
+The tied object is itself an array, which contains a second hash in the 
+HASH slot (index 0) which is used to perform the default operations. 
+
+The callbacks available are in a hash keyed by name in the METHOD slot of
+the array (index 1). 
+
+If your code needs to store extra data in the object it should be stored 
+in the PRIVATE slot of the object (index 2). No future release of this module
 will ever use or alter anything in that slot.
+
+The arguments passed to the tie constructor will be seperated by the case of 
+their keys. The ones with all capitals will be stored in the METHOD hash, and
+the rest will be stored in the PRIVATE hash.
 
 =head2 CALLBACKS
 
@@ -179,13 +204,41 @@ Returns what evaluating the hash in scalar context yields.
 
 =over 4
 
-=item hash
+=item base_hash
 
 return or sets the underlying hash for this tie.
 
+    $_[0]->base_hash->{$key}= $value;
+
+=item h
+
+alias for base_hash.
+
+    $_[0]->h->{$key}= $value;
+
+=item private_hash
+
+Return or sets the hash of private data associated with this tie. This
+value will never be touched by any code in this class or its subclasses. 
+It is purely object specific.
+
+    $_[0]->p->{'something'}= 'cake!';
+
+=item p 
+
+alias for private_hash
+
+=item method_hash
+
+return or sets the hash of methods that are overriden for this tie. Exactly
+why you would want to use this is a little beyond my imagination, but for those
+who can think of a reason here is a nice way to do it. :-)
+
 =item methods
 
-returns a list of methods that are overriden for this tye.
+Returns a list of methods that are overriden for this tie. Why this would be useful
+escapes me, but here it is anyway for Completeness sake, whoever she is, but people
+are always coding for her so I might as well too.
 
 =back
 
@@ -195,12 +248,25 @@ The following subs are exportable on request:
 
 =over 4
 
-=item tie_hash_method(PAIRS)
+=item hash_overload(PAIRS)
 
 Returns a reference to a hash tied with the specified
 callbacks overriden. Just a short cut.
 
+=item HASH
+
+Constant subroutine equivalent to 0
+
+=item METHOD
+
+Constant subroutine equivalent to 1
+
+=item PRIVATE
+
+Constant subroutine equivalent to 2
+
 =back
+
 
 =head1 AUTHOR
 

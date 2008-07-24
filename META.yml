@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                Tie-Hash-Method
-version:             0.01
+version:             0.02
 abstract:            Tied hash with specific methods overriden by callbacks
 license:             ~
 generated_by:        ExtUtils::MakeMaker version 6.36
